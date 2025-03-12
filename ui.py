@@ -341,77 +341,143 @@ def display_model_comparison(model_config, known_models, vram_calc_fn, tps_calc_
         # Add Inference Performance as the first item in the Advanced Analysis
         st.subheader("Inference Performance Analysis")
         
-        # Get information about various GPU tiers
-        gpu_tiers = {
-            "Consumer GPU": "Standard consumer GPUs like RTX 3060, RTX 3070",
-            "High-End Consumer": "High-end consumer GPUs like RTX 4080, RTX 4090",
-            "Professional GPU": "Data center GPUs like A40, A100, H100",
-            "No CUDA (CPU)": "CPU-only inference (no CUDA acceleration)"
-        }
+        # Get the filtered hardware options based on sensitivity level
+        filtered_hardware = filter_fn(model_config["sensitivity_level"])
         
-        # Calculate performance for current model on different hardware tiers
-        current_model_perf = {}
-        if model_config["cuda_support"]:
-            current_model_perf["Consumer GPU"] = tps_calc_fn(
-                model_config["num_params"], 
-                model_config["quantization"], 
-                model_config["context_length"], 
-                True, 
-                "consumer"
-            )
-            current_model_perf["High-End Consumer"] = tps_calc_fn(
-                model_config["num_params"], 
-                model_config["quantization"], 
-                model_config["context_length"], 
-                True, 
-                "high-end"
-            )
-            current_model_perf["Professional GPU"] = tps_calc_fn(
-                model_config["num_params"], 
-                model_config["quantization"], 
-                model_config["context_length"], 
-                True, 
-                "professional"
-            )
-        
-        current_model_perf["No CUDA (CPU)"] = tps_calc_fn(
+        # Get VRAM requirements for the current model
+        vram_needed = vram_calc_fn(
             model_config["num_params"], 
             model_config["quantization"], 
             model_config["context_length"], 
-            False, 
-            "consumer"
-        )
+            model_config["cuda_support"], 
+            model_config["operation_mode"]
+        )["total"]
         
-        # Create performance data for visualization
+        # Create a list to store performance data for compatible hardware
         perf_data = []
-        for tier, tps in current_model_perf.items():
-            perf_data.append({
-                "Hardware Tier": tier,
-                "Tokens Per Second": tps,
-                "Description": gpu_tiers.get(tier, "")
-            })
         
-        perf_df = pd.DataFrame(perf_data)
+        # Find compatible hardware options and calculate performance for each
+        for device, memory in filtered_hardware.items():
+            # Calculate how many GPUs of this type would be needed
+            gpus_needed = max(1, int(np.ceil(vram_needed / memory)))
+            
+            # Cap at reasonable numbers (5 is standard partition limit)
+            gpus_needed = min(gpus_needed, 5)
+            
+            # Calculate total memory available with this configuration
+            total_memory = memory * gpus_needed
+            
+            # Check if this hardware is compatible
+            if total_memory >= vram_needed:
+                # Determine the GPU tier based on memory and device name
+                if "A100" in device or "H100" in device:
+                    gpu_tier = "professional"
+                elif "A40" in device or "L40" in device:
+                    gpu_tier = "professional" 
+                elif "GeForce" in device or "RTX" in device:
+                    gpu_tier = "high-end" if memory >= 24 else "consumer"
+                else:
+                    # Default to professional for other server GPUs
+                    gpu_tier = "professional"
+                
+                # Calculate tokens per second for this hardware
+                tps = tps_calc_fn(
+                    model_config["num_params"],
+                    model_config["quantization"],
+                    model_config["context_length"],
+                    model_config["cuda_support"],
+                    gpu_tier
+                )
+                
+                # Extract cluster name for better display
+                if "[" in device:
+                    parts = device.split("[")
+                    cluster = parts[0].strip()
+                    partition = parts[1].split("]")[0].strip()
+                    gpu_model = device.split("-")[1].strip() if "-" in device else "Unknown"
+                else:
+                    cluster = device
+                    partition = "Unknown"
+                    gpu_model = "Unknown"
+                
+                # Add to performance data
+                perf_data.append({
+                    "Hardware Configuration": device,
+                    "GPUs Required": gpus_needed,
+                    "Tokens Per Second": tps,
+                    "Total Memory (GB)": total_memory,
+                    "Memory Per GPU (GB)": memory,
+                    "GPU Tier": gpu_tier.capitalize(),
+                    "Cluster": cluster,
+                    "Partition": partition
+                })
         
-        # Display the performance information in a table
-        st.markdown(f"#### Performance of Your {model_config['num_params']}B Parameter Model")
-        st.dataframe(perf_df[["Hardware Tier", "Tokens Per Second", "Description"]], use_container_width=True, hide_index=True)
-        
-        # Create a performance visualization
-        fig = px.bar(
-            perf_df,
-            x="Hardware Tier",
-            y="Tokens Per Second",
-            title=f"Estimated Performance with {model_config['quantization']} Quantization",
-            color="Tokens Per Second",
-            color_continuous_scale="Viridis",
-            text="Tokens Per Second"
-        )
-        
-        fig.update_traces(texttemplate='%{text:.0f}', textposition='outside')
-        fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
-        
-        st.plotly_chart(fig, use_container_width=True)
+        # If we have compatible hardware, display it
+        if perf_data:
+            # Create DataFrame for visualization
+            perf_df = pd.DataFrame(perf_data)
+            
+            # Sort by performance (tokens per second)
+            perf_df = perf_df.sort_values("Tokens Per Second", ascending=False)
+            
+            # Display the performance information in a table with relevant columns
+            st.markdown(f"#### Performance of Your {model_config['num_params']}B Parameter Model on Compatible Hardware")
+            display_cols = ["Hardware Configuration", "GPUs Required", "Tokens Per Second", "Total Memory (GB)"]
+            st.dataframe(perf_df[display_cols], use_container_width=True, hide_index=True)
+            
+            # Create a performance visualization
+            fig = px.bar(
+                perf_df,
+                x="Hardware Configuration",
+                y="Tokens Per Second",
+                title=f"Estimated Performance with {model_config['quantization']} Quantization on Compatible Hardware",
+                color="Tokens Per Second",
+                color_continuous_scale="Viridis",
+                text="Tokens Per Second"
+            )
+            
+            fig.update_traces(texttemplate='%{text:.0f}', textposition='outside')
+            fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+            fig.update_layout(xaxis={'tickangle': 45})
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            # No compatible hardware found
+            st.warning(f"No compatible hardware found for the current configuration at {model_config['sensitivity_level']} sensitivity level.")
+            
+            # Show generic performance metrics as fallback
+            generic_tiers = {
+                "Consumer GPU": "consumer",
+                "High-End Consumer": "high-end",
+                "Professional GPU": "professional",
+                "No CUDA (CPU)": "consumer"  # Only used when CUDA is disabled
+            }
+            
+            generic_perf = []
+            for tier_name, tier_value in generic_tiers.items():
+                # Skip CPU option if CUDA is enabled
+                if tier_name == "No CUDA (CPU)" and model_config["cuda_support"]:
+                    continue
+                
+                # Calculate performance for this tier
+                tps = tps_calc_fn(
+                    model_config["num_params"],
+                    model_config["quantization"],
+                    model_config["context_length"],
+                    model_config["cuda_support"] if tier_name != "No CUDA (CPU)" else False,
+                    tier_value
+                )
+                
+                generic_perf.append({
+                    "Hardware Tier": tier_name,
+                    "Tokens Per Second": tps,
+                    "Note": "Generic estimate - no compatible hardware found"
+                })
+            
+            generic_df = pd.DataFrame(generic_perf)
+            
+            st.markdown(f"#### Generic Performance Estimates (No Compatible Hardware)")
+            st.dataframe(generic_df, use_container_width=True, hide_index=True)
         
         # Add performance interpretation
         st.markdown("#### Performance Interpretation")
@@ -426,6 +492,8 @@ def display_model_comparison(model_config, known_models, vram_calc_fn, tps_calc_
         
         # Now continue with the rest of the advanced analysis content
         st.markdown("---")
+        
+        # [Rest of the function remains unchanged]
         st.subheader("Parameter vs Memory Scaling")
         
         # Create scaling analysis for different quantizations
