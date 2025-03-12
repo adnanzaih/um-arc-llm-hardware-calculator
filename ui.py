@@ -11,7 +11,7 @@ def create_sidebar_inputs():
     # Model size selection - offering both slider and direct input
     param_input_method = st.sidebar.radio(
         "Parameter Input Method",
-        options=["Slider", "Direct Input"],
+        options=["Direct Input", "Slider"],
         index=0
     )
 
@@ -60,7 +60,7 @@ def create_sidebar_inputs():
         "Data Sensitivity Level",
         options=["Moderate", "High"],
         index=0,
-        help="Moderate: Only great-lakes partitions. High: All clusters including armis2 and lighthouse"
+        help="Moderate: Only great-lakes partitions. High: Only armis2 and lighthouse (excludes great-lakes for security)"
     )
 
     # Training vs Inference mode
@@ -134,8 +134,6 @@ def display_requirements(
     tokens_per_second=None, tokens_per_second_training=None
 ):
     """Display calculated requirements in a compact table format."""
-    st.subheader("Model Specifications & Requirements")
-    
     # Create a tabular format using two columns
     col1, col2 = st.columns(2)
     
@@ -158,24 +156,15 @@ def display_requirements(
             "Optimizer": model_config['optimizer_choice']
         })
     
-    # Create a dictionary for computed requirements
+    # Create a dictionary for computed requirements - removed partition and number of GPUs
     computed_reqs = {
         "Total VRAM Needed": f"{vram_needed:.2f} GB",
         "Model Weights": f"{model_weight_memory:.2f} GB",
         "KV Cache": f"{kv_cache_memory:.2f} GB",
         "Runtime Overhead": f"{overhead_memory:.2f} GB",
         "On-Disk Size": f"{disk_size:.2f} GB",
-        "Number of GPUs Required": str(num_gpus),  # Convert to string
         "System RAM": f"{system_ram:.2f} GB"
     }
-    
-    # Check if GPU recommendation involves multiple partitions
-    if "partitions" in gpu_config:
-        partition_note = gpu_config
-        computed_reqs["Recommended Setup"] = f"{num_gpus} GPUs across multiple partitions"
-    else:
-        partition_note = None
-        computed_reqs["Recommended Partition"] = gpu_config
     
     # Add training-specific memory components if in training mode
     if model_config["operation_mode"] == "Training":
@@ -194,13 +183,9 @@ def display_requirements(
         st.markdown("#### Model Specifications")
         st.dataframe(specs_df, use_container_width=True, hide_index=True)
         
-        # Performance metrics below the model specs
-        if model_config["operation_mode"] == "Inference" and tokens_per_second is not None:
-            perf_data = {"Metric": ["Estimated Tokens Per Second"], "Value": [str(tokens_per_second)]}  # Convert to string
-            perf_df = pd.DataFrame(perf_data)
-            st.markdown("#### Inference Performance")
-            st.dataframe(perf_df, use_container_width=True, hide_index=True)
-        elif model_config["operation_mode"] == "Training" and tokens_per_second_training is not None:
+        # Note: Inference performance metrics moved to Advanced Analysis section
+        # Only keep Training performance if in Training mode
+        if model_config["operation_mode"] == "Training" and tokens_per_second_training is not None:
             perf_data = {"Metric": ["Estimated Tokens Per Second (Training)"], "Value": [f"{tokens_per_second_training:.1f}"]}
             perf_df = pd.DataFrame(perf_data)
             st.markdown("#### Training Performance")
@@ -209,14 +194,6 @@ def display_requirements(
     with col2:
         st.markdown("#### Hardware Requirements")
         st.dataframe(reqs_df, use_container_width=True, hide_index=True)
-    
-    # Display partition note if present
-    if partition_note:
-        st.info(partition_note)
-    
-    # Display warning if no suitable partition is found
-    elif "No suitable" in gpu_config:
-        st.warning(gpu_config)
 
 def display_memory_charts(
     operation_mode, model_weight_memory, kv_cache_memory, overhead_memory,
@@ -278,37 +255,74 @@ def display_memory_charts(
         st.plotly_chart(fig, use_container_width=True)
 
 def display_hardware_comparison(model_config, vram_needed, filtered_options):
-    """Display hardware comparison table with sensitivity filtering."""
-    st.subheader("ARC HPC Clusters Available")
+    """Display hardware comparison table with focus on recommended hardware configurations."""
+    st.subheader("ARC HPC Clusters Hardware Configuration")
     
-    # Create a comparison dataframe
+    # Get number of GPUs required for each hardware option
     comparison_data = []
     for device, memory in filtered_options.items():
-        can_run = "Yes" if memory >= vram_needed else "No"
-        headroom = memory - vram_needed
-        headroom_pct = (headroom / memory) * 100 if memory >= vram_needed else 0
+        # Calculate how many GPUs of this type would be needed
+        gpus_needed = max(1, int(np.ceil(vram_needed / memory)))
+        
+        # Cap at reasonable numbers (5 is standard partition limit mentioned in calc.py)
+        gpus_needed = min(gpus_needed, 5)
+        
+        # Calculate total memory available with this configuration
+        total_memory = memory * gpus_needed
+        
+        # Determine if this config can run the model
+        can_run = "Yes" if total_memory >= vram_needed else "No"
+        
+        # Calculate memory efficiency (how much of the total memory would be used)
+        memory_efficiency = (vram_needed / total_memory) * 100 if total_memory > 0 else 0
+        
+        # Extract cluster and GPU information
+        if "[" in device:
+            parts = device.split("[")
+            cluster = parts[0].strip()
+            remaining = "[".join(parts[1:])
+            gpu_type = remaining.split("]")[0].strip()
+            if len(parts) > 2:
+                gpu_count = parts[2].strip("[] ")
+            else:
+                gpu_count = "N/A"
+        else:
+            cluster = device
+            gpu_type = "Unknown"
+            gpu_count = "N/A"
         
         comparison_data.append({
-            "Device": device,
-            "Memory (GB)": memory,
+            "Partition": device,
+            "GPU Memory (GB)": memory,
+            "GPUs Required": gpus_needed,
+            "Total Memory (GB)": total_memory,
             "Can Run Model": can_run,
-            "Memory Headroom (GB)": max(0, headroom),
-            "Headroom %": max(0, headroom_pct)
+            "Memory Utilization": f"{memory_efficiency:.1f}%",
+            "Cluster": cluster,
+            "GPU Type": gpu_type,
+            "Available GPUs": gpu_count
         })
     
     comparison_df = pd.DataFrame(comparison_data)
     
-    # Sort by memory
-    comparison_df = comparison_df.sort_values(by="Memory (GB)", ascending=False)
+    # Sort by efficiency (most efficient first)
+    comparison_df = comparison_df.sort_values(by=["Can Run Model", "GPUs Required", "Memory Utilization"], 
+                                             ascending=[False, True, False])
     
-    # Create tabs for compatible hardware vs all hardware (reversed order)
+    # Create tabs for compatible hardware vs all hardware
     tab1, tab2 = st.tabs(["Compatible Hardware Only", "All Hardware"])
     
-    # First tab now shows compatible hardware
+    # First tab shows compatible hardware
     with tab1:
         compatible_df = comparison_df[comparison_df["Can Run Model"] == "Yes"]
         if not compatible_df.empty:
-            st.dataframe(compatible_df)
+            # Select and reorder columns for better display
+            display_columns = ["Partition", "GPU Memory (GB)", "GPUs Required", "Total Memory (GB)", "Memory Utilization"]
+            st.dataframe(compatible_df[display_columns], use_container_width=True)
+            
+            # Highlight recommended configuration
+            best_config = compatible_df.iloc[0]
+            st.success(f"**Recommended Configuration:** {best_config['Partition']} with {best_config['GPUs Required']} GPUs, providing a total of {best_config['Total Memory (GB)']:.1f} GB GPU memory.")
         else:
             st.warning("No compatible hardware found for current configuration at this sensitivity level.")
     
@@ -317,10 +331,101 @@ def display_hardware_comparison(model_config, vram_needed, filtered_options):
         if comparison_df.empty:
             st.warning(f"No hardware options available for {model_config['sensitivity_level']} sensitivity level. Consider enabling high sensitivity.")
         else:
-            st.dataframe(comparison_df)
+            # Select and reorder columns for better display
+            display_columns = ["Partition", "GPU Memory (GB)", "GPUs Required", "Total Memory (GB)", "Can Run Model", "Memory Utilization"]
+            st.dataframe(comparison_df[display_columns], use_container_width=True)
+
 def display_model_comparison(model_config, known_models, vram_calc_fn, tps_calc_fn, filter_fn):
     """Create and display model comparison with sensitivity awareness."""
     with st.expander("Advanced Analysis"):
+        # Add Inference Performance as the first item in the Advanced Analysis
+        st.subheader("Inference Performance Analysis")
+        
+        # Get information about various GPU tiers
+        gpu_tiers = {
+            "Consumer GPU": "Standard consumer GPUs like RTX 3060, RTX 3070",
+            "High-End Consumer": "High-end consumer GPUs like RTX 4080, RTX 4090",
+            "Professional GPU": "Data center GPUs like A40, A100, H100",
+            "No CUDA (CPU)": "CPU-only inference (no CUDA acceleration)"
+        }
+        
+        # Calculate performance for current model on different hardware tiers
+        current_model_perf = {}
+        if model_config["cuda_support"]:
+            current_model_perf["Consumer GPU"] = tps_calc_fn(
+                model_config["num_params"], 
+                model_config["quantization"], 
+                model_config["context_length"], 
+                True, 
+                "consumer"
+            )
+            current_model_perf["High-End Consumer"] = tps_calc_fn(
+                model_config["num_params"], 
+                model_config["quantization"], 
+                model_config["context_length"], 
+                True, 
+                "high-end"
+            )
+            current_model_perf["Professional GPU"] = tps_calc_fn(
+                model_config["num_params"], 
+                model_config["quantization"], 
+                model_config["context_length"], 
+                True, 
+                "professional"
+            )
+        
+        current_model_perf["No CUDA (CPU)"] = tps_calc_fn(
+            model_config["num_params"], 
+            model_config["quantization"], 
+            model_config["context_length"], 
+            False, 
+            "consumer"
+        )
+        
+        # Create performance data for visualization
+        perf_data = []
+        for tier, tps in current_model_perf.items():
+            perf_data.append({
+                "Hardware Tier": tier,
+                "Tokens Per Second": tps,
+                "Description": gpu_tiers.get(tier, "")
+            })
+        
+        perf_df = pd.DataFrame(perf_data)
+        
+        # Display the performance information in a table
+        st.markdown(f"#### Performance of Your {model_config['num_params']}B Parameter Model")
+        st.dataframe(perf_df[["Hardware Tier", "Tokens Per Second", "Description"]], use_container_width=True, hide_index=True)
+        
+        # Create a performance visualization
+        fig = px.bar(
+            perf_df,
+            x="Hardware Tier",
+            y="Tokens Per Second",
+            title=f"Estimated Performance with {model_config['quantization']} Quantization",
+            color="Tokens Per Second",
+            color_continuous_scale="Viridis",
+            text="Tokens Per Second"
+        )
+        
+        fig.update_traces(texttemplate='%{text:.0f}', textposition='outside')
+        fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Add performance interpretation
+        st.markdown("#### Performance Interpretation")
+        st.markdown("""
+        - **40+ TPS**: Excellent (real-time conversation)
+        - **20-40 TPS**: Very good performance
+        - **10-20 TPS**: Good performance
+        - **5-10 TPS**: Adequate for most use cases
+        - **1-5 TPS**: Noticeable lag in responses
+        - **<1 TPS**: Very slow, not suitable for interactive applications
+        """)
+        
+        # Now continue with the rest of the advanced analysis content
+        st.markdown("---")
         st.subheader("Parameter vs Memory Scaling")
         
         # Create scaling analysis for different quantizations

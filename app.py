@@ -185,7 +185,7 @@ st.markdown("""
 ### Understanding Sensitivity Levels
 
 - **Moderate Sensitivity**: Use this for standard research data that doesn't contain sensitive information. Only great-lakes partitions are available.
-- **High Sensitivity**: Use this for projects that can access special-purpose hardware. All partitions (great-lakes, armis2, lighthouse) are available.
+- **High Sensitivity**: Use this for highly sensitive data that requires special security measures. Only armis2 and lighthouse partitions are available (great-lakes is excluded for security reasons).
 
 Always ensure your data handling complies with institutional policies and applicable regulations.
 """)

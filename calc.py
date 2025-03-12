@@ -242,12 +242,13 @@ def calculate_system_ram(vram_total):
 def recommend_gpu_config(vram_needed, sensitivity_level="moderate"):
     """
     Recommend hardware partition based on VRAM requirements using available cluster options.
+    Prioritizes using fewer GPUs of higher memory capacity.
     
     Args:
         vram_needed: VRAM needed in GB
         sensitivity_level: 'moderate' or 'high' - determines which clusters are available
     """
-    # Get available hardware options from our function
+    # Get available hardware options
     hardware_options = get_hardware_options()
     
     # Filter options based on sensitivity level
@@ -258,43 +259,57 @@ def recommend_gpu_config(vram_needed, sensitivity_level="moderate"):
         elif sensitivity_level == "high":
             filtered_options[option_name] = vram
     
-    # Get the maximum VRAM available in a single GPU
-    max_vram_per_gpu = max(filtered_options.values()) if filtered_options else 16
+    # If no options available after filtering, use a default message
+    if not filtered_options:
+        return "No suitable partition found for current sensitivity level - consider enabling high-sensitivity partitions"
     
-    # Check if we need more than 5 GPUs (partition limit)
-    gpus_needed = np.ceil(vram_needed / max_vram_per_gpu)
-    
-    if gpus_needed > 5:
-        # We need to use multiple partitions
-        num_partitions = np.ceil(gpus_needed / 5)
-        if sensitivity_level == "moderate":
-            return f"Need {int(gpus_needed)} GPUs ({int(num_partitions)} partitions) - Consider enabling high-sensitivity partitions for larger GPUs"
-        else:
-            return f"Need {int(gpus_needed)} GPUs (spread across {int(num_partitions)} partitions)"
-    
-    # For cases where 5 or fewer GPUs are needed:
-    # Find suitable options that meet the VRAM requirements
-    suitable_options = []
+    # Find the best hardware configuration
+    best_configs = []
     for option_name, vram in filtered_options.items():
-        if vram >= vram_needed / 5:  # Could run on 5 or fewer GPUs
-            suitable_options.append((option_name, vram))
+        # Calculate how many GPUs of this type would be needed
+        gpus_needed = max(1, int(np.ceil(vram_needed / vram)))
+        
+        # Cap at reasonable numbers (5 is standard partition limit)
+        gpus_needed = min(gpus_needed, 5)
+        
+        # Check if this configuration can run the model
+        if vram * gpus_needed >= vram_needed:
+            # Calculate memory efficiency (how much of the total memory would be used)
+            memory_efficiency = (vram_needed / (vram * gpus_needed)) * 100
+            
+            best_configs.append({
+                "option_name": option_name,
+                "vram": vram,
+                "gpus_needed": gpus_needed,
+                "total_memory": vram * gpus_needed,
+                "memory_efficiency": memory_efficiency
+            })
     
-    # Sort by VRAM (ascending) to find the most efficient option
-    suitable_options.sort(key=lambda x: x[1])
-    
-    if suitable_options:
-        # Return the best match (lowest sufficient VRAM)
-        return suitable_options[0][0]
-    else:
-        # If no option has enough VRAM, recommend multi-GPU solution
+    # If no viable configuration found
+    if not best_configs:
         if sensitivity_level == "moderate":
             return "No suitable moderate-sensitivity partition found - consider enabling high-sensitivity partitions"
         else:
-            return f"Need multiple partitions - model requires {int(gpus_needed)} GPUs spread across {int(np.ceil(gpus_needed / 5))} partitions"
+            return f"No suitable configuration found - model requires more than {vram_needed:.1f} GB memory"
+    
+    # Sort configurations by:
+    # 1. Number of GPUs (ascending - fewer is better)
+    # 2. Memory efficiency (descending - higher is better)
+    best_configs.sort(key=lambda x: (x["gpus_needed"], -x["memory_efficiency"]))
+    
+    # Return the best match
+    best_config = best_configs[0]
+    
+    # Special case for multi-GPU configurations
+    if best_config["gpus_needed"] > 1:
+        return f"{best_config['option_name']} with {best_config['gpus_needed']} GPUs"
+    else:
+        return best_config["option_name"]
 
 def calculate_gpus_required(vram_needed, sensitivity_level="moderate"):
     """
     Calculate number of GPUs needed based on VRAM requirements and available hardware.
+    This matches the logic in recommend_gpu_config() for consistency.
     
     Args:
         vram_needed: VRAM needed in GB
@@ -313,28 +328,40 @@ def calculate_gpus_required(vram_needed, sensitivity_level="moderate"):
     
     # If no options available after filtering, use a default value
     if not filtered_options:
-        return max(1, min(5, int(np.ceil(vram_needed / 16))))  # Use 16GB as default denominator, max 5 GPUs
+        return max(1, min(5, int(np.ceil(vram_needed / 16))))  # Default to 16GB GPUs
     
-    # Find the recommended GPU config - we'll use the same logic as recommend_gpu_config
-    suitable_options = []
+    # Find the best hardware configuration using same logic as recommend_gpu_config
+    best_configs = []
     for option_name, vram in filtered_options.items():
-        suitable_options.append((option_name, vram))
+        # Calculate how many GPUs of this type would be needed
+        gpus_needed = max(1, int(np.ceil(vram_needed / vram)))
+        
+        # Cap at reasonable numbers (5 is standard partition limit)
+        gpus_needed = min(gpus_needed, 5)
+        
+        # Check if this configuration can run the model
+        if vram * gpus_needed >= vram_needed:
+            # Calculate memory efficiency
+            memory_efficiency = (vram_needed / (vram * gpus_needed)) * 100
+            
+            best_configs.append({
+                "option_name": option_name,
+                "vram": vram,
+                "gpus_needed": gpus_needed,
+                "memory_efficiency": memory_efficiency
+            })
     
-    # Sort by VRAM (ascending) to find the most efficient option
-    suitable_options.sort(key=lambda x: x[1])
+    # If no viable configuration found
+    if not best_configs:
+        return max(1, min(5, int(np.ceil(vram_needed / max(filtered_options.values())))))
     
-    if suitable_options:
-        # Get the VRAM of the recommended GPU
-        recommended_gpu_vram = suitable_options[0][1]
-    else:
-        # Default to 16GB if no suitable options
-        recommended_gpu_vram = 16
+    # Sort configurations by:
+    # 1. Number of GPUs (ascending - fewer is better)
+    # 2. Memory efficiency (descending - higher is better)
+    best_configs.sort(key=lambda x: (x["gpus_needed"], -x["memory_efficiency"]))
     
-    # Calculate GPUs needed based on the recommended GPU's VRAM capacity
-    gpus_needed = np.ceil(vram_needed / recommended_gpu_vram)
-    
-    # Cap at 5 GPUs maximum per partition
-    return max(1, min(5, int(gpus_needed)))
+    # Return the number of GPUs needed for the best configuration
+    return best_configs[0]["gpus_needed"]
 
 def estimate_tokens_per_second(params_billions, quant_type, context_length, has_cuda=True, gpu_tier="consumer"):
     """
@@ -451,11 +478,11 @@ def filter_hardware_options(sensitivity_level="moderate"):
     all_options = get_hardware_options()
     
     if sensitivity_level == "moderate":
-        # Only include great-lakes partitions
+        # Only include great-lakes partitions for moderate sensitivity
         return {k: v for k, v in all_options.items() if "great-lakes" in k}
     else:
-        # Include all partitions
-        return all_options
+        # For high sensitivity, exclude great-lakes partitions
+        return {k: v for k, v in all_options.items() if "great-lakes" not in k}
 
 def get_known_models():
     """Return a dictionary of known models with their parameters and quantization."""
