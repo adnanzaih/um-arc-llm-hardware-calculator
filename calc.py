@@ -487,16 +487,35 @@ def filter_hardware_options(sensitivity_level="moderate"):
 def get_known_models():
     """Return a dictionary of known models with their parameters and quantization."""
     return {
-        "GPT-3 (175B)": {"params": 175, "quant": "FP16"},
+        # Smaller models (1-3B)
+        "TinyLlama (1.1B)": {"params": 1.1, "quant": "Q4"},
+        "Phi-1.5 (1.3B)": {"params": 1.3, "quant": "Q4"},
+        "Phi-2 (2.7B)": {"params": 2.7, "quant": "Q4"},
+        "Gemma (2B)": {"params": 2, "quant": "Q4"},
+        
+        # Medium models (4-10B)
+        "LLaMA (7B)": {"params": 7, "quant": "Q4"},
         "LLaMA 2 (7B)": {"params": 7, "quant": "Q4"},
-        "LLaMA 2 (13B)": {"params": 13, "quant": "Q4"},
-        "LLaMA 2 (70B)": {"params": 70, "quant": "Q4"},
-        "Falcon (180B)": {"params": 180, "quant": "FP16"},
-        "Gemma (7B)": {"params": 7, "quant": "Q4"},
         "Mistral (7B)": {"params": 7, "quant": "Q4"},
-        "Claude 3 Opus (~300B est.)": {"params": 300, "quant": "FP16"},
-        "Mixtral 8x7B": {"params": 47, "quant": "Q4"},  # MoE architecture, effective params
+        "Gemma (7B)": {"params": 7, "quant": "Q4"},
         "Llama 3 (8B)": {"params": 8, "quant": "Q4"},
+        
+        # Larger models (11-20B)
+        "LLaMA (13B)": {"params": 13, "quant": "Q4"},
+        "LLaMA 2 (13B)": {"params": 13, "quant": "Q4"},
+        "Mistral Large (18B)": {"params": 18, "quant": "Q4"},
+        
+        # Large models (30-70B)
+        "LLaMA (30B)": {"params": 30, "quant": "Q4"},
+        "LLaMA (65B)": {"params": 65, "quant": "Q4"},
+        "LLaMA 2 (70B)": {"params": 70, "quant": "Q4"},
         "Llama 3 (70B)": {"params": 70, "quant": "Q4"},
+        
+        # Mixture of Experts models
+        "Mixtral 8x7B": {"params": 47, "quant": "Q4"},  # MoE architecture, effective params
+        
+        # Commercial models for reference
+        "GPT-3 (175B)": {"params": 175, "quant": "FP16"},
         "Claude 3.7 Sonnet (~140B est.)": {"params": 140, "quant": "FP16"},
+        "Claude 3 Opus (~300B est.)": {"params": 300, "quant": "FP16"},
     }
